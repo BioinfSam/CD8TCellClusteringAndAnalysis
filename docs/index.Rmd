@@ -1,0 +1,216 @@
+---
+title: "CD8TCellClusteringAndAnalysis"
+author: "Sam Darko"
+output: html_document
+date: "'r Sys.Date()'"
+
+params:
+  inputFileString: "/Users/sam/Documents/portfolio/datasets/single_cell/cleanedSamples.rds"
+  subsetString: "CD8-T"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(dplyr)
+library(knitr)
+library(r2r)
+library(vegan)
+library(harmony)
+
+setwd("/Users/sam/Documents/GitHub/CD8TCellClusteringAndAnalysis/docs/")
+```
+
+## Functions
+
+Functions that are used down the line in this script
+
+```{r ComputePCsToUse, echo = FALSE, warning = FALSE, message = FALSE}
+ComputePCsToUseFunction <- function(this.seurat){
+  
+  ## Find optimum number of PCs to use downstream.  Code is adapted from:
+  ## https://hbctraining.github.io/scRNA-seq/lessons/elbow_plot_metric.html
+  
+  # Determine percent of variation associated with each PC
+  pct <- this.seurat[["pca"]]@stdev / sum(this.seurat[["pca"]]@stdev) * 100
+  
+  # Calculate cumulative percents for each PC
+  cumu <- cumsum(pct)
+  
+  # Determine which PC exhibits cumulative percent greater than 90% and % variation associated with PC as less than 5
+  co1 <- which(cumu > 90 & pct < 5)[1]
+  
+  # Determine the difference between variation of PC and subsequent PC
+  co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+  
+  # last point where change of % of variation is more than 0.1%
+  pcs <- min(co1, co2)
+  
+  return(pcs)
+}
+```
+
+```{r QuietUnwantedGenes, echo = FALSE}
+
+## adapted from:
+## https://rdrr.io/github/ncborcherding/Trex/src/R/quietTCRgenes.R
+
+## Define "not in"
+`%ni%` <- Negate(`%in%`)
+
+quietUnwantedGenesFunction <- function(this.seurat, unwanted_genes){
+  if(inherits(x=this.seurat, what = "Seurat")){
+    ## grep variable features (genes) against our unwanted genes list
+    this.unwanted_genes <- grep(pattern = unwanted_genes, x = this.seurat[["SCT"]]@var.features, value = TRUE)
+    
+    ## remove unwanted genes from var.features
+    this.seurat[["SCT"]]@var.features <- this.seurat[["SCT"]]@var.features[this.seurat[["SCT"]]@var.features %ni% this.unwanted_genes]
+    
+    ## remove unwanted genes from scaled matrix produced by SCTransform
+    ## probably simpler to just do it in place, I think this looks cleaner
+    temp.matrix <- this.seurat[["SCT"]]@scale.data
+    temp.matrix <- temp.matrix[!(row.names(temp.matrix) %in% this.unwanted_genes),]
+    this.seurat[["SCT"]]@scale.data <- temp.matrix
+  
+    } else {
+        ## working with a vector of genes
+        ## grep variable features against unwanted genes
+        this.unwanted_genes <- grep(pattern = unwanted_genes, x = this.seurat, value = TRUE)
+        this.seurat <- this.seurat[this.seurat %ni% this.unwanted_genes]
+    }
+  return(this.seurat)
+}
+
+```
+
+## Building our Seurat object
+
+```{r ReadInSeuratAndSubset, warning = FALSE}
+## read in public datasets
+my.seurat <- readRDS(params$inputFileString)
+
+my.seurat <- SetIdent(my.seurat, value = my.seurat$predicted.celltype.l1)
+
+my.seurat <- subset(my.seurat, idents = params$subsetString)
+
+## give us a summary of the seurat object
+my.seurat
+
+```
+
+## Normalize and Find Features
+
+```{r IntegrationPrep}
+
+## set identity to use, in this case it's the original ID
+my.seurat <- SetIdent(my.seurat, value = my.seurat$orig.ident)
+
+## split the dataset into a list by the orignal ID
+my.seurat.list <- SplitObject(my.seurat, split.by = "orig.ident")
+
+## normalize and identify variable features for each dataset independently
+## it's slightly better to determine variable genes for each sample 
+## and then make a final selection later
+
+my.seurat.list <- lapply(X = my.seurat.list, FUN = function(x) {
+  x <- SCTransform(x, vst.flavor = "v2", verbose = FALSE, conserve.memory = FALSE, ncells = 5000)
+})
+
+my.unwanted_genes <- "^TRBV|^TRBD|^TRBJ|^TRBC|^TRDV|^TRDD|^TRDJ|^TRDC|^TRAV|^TRAJ|^TRAC|^TRGV|^TRGJ|^TRGC"
+
+my.seurat.list <- lapply(X = my.seurat.list, FUN = function(x) {
+  x <- quietUnwantedGenesFunction(x, my.unwanted_genes)
+})
+
+features <- SelectIntegrationFeatures(object.list = my.seurat.list, nfeatures = 3000)
+
+my.seurat <- merge(my.seurat.list[[1]], y = my.seurat.list[2:length(my.seurat.list)], merge.data = TRUE)
+
+VariableFeatures(my.seurat) <- features
+
+my.seurat <- PrepSCTFindMarkers(my.seurat, assay = "SCT", verbose = TRUE)
+
+```
+
+```{r HarmonyIntegration}
+## adapted from:
+## https://github.com/immunogenomics/harmony/issues/41
+
+rm(my.seurat.list)
+
+## Generate PCA using variable genes
+my.seurat <- RunPCA(object = my.seurat, assay = "SCT", npcs = 50)
+
+## compute PCs to use in a non-arbitrary fashion
+pcs <- ComputePCsToUseFunction(my.seurat)
+
+## https://github.com/immunogenomics/harmony/issues/130
+## for rationale in setting epsilon cluster and epsilong harmony parameters
+## run Harmony using PCs determined earlier
+
+## probably don't need to run 30 iterations, but let's just be careful
+## at the expense of slightly longer run time
+
+my.seurat <- RunHarmony(object = my.seurat,
+                        assay.use = "SCT",
+                        reduction.use = "pca",
+                        dims.use = 1:pcs,
+                        group.by.vars = "orig.ident",
+                        epsilon.cluster = -Inf,
+                        epsilon.harmony = -Inf,
+                        max.iter.harmony = 30,
+                        plot_convergence = TRUE)
+```
+
+```{r ClusterVisualization}
+my.seurat <- RunUMAP(object = my.seurat, assay = "SCT", reduction = "harmony", dims = 1:pcs)
+
+## Find neighbors using PCs determined earlier
+my.seurat <- FindNeighbors(object = my.seurat, assay = "SCT", reduction = "harmony", dims = 1:pcs)
+
+## Find clusters using neighbors and PCs determined earlier
+my.seurat <- FindClusters(object = my.seurat, resolution = 0.8, algorithm = 1)
+
+## View clusters via UMAP
+p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE) + NoLegend()
+
+## see how samples cluster on the UMAP
+my.seurat <- SetIdent(my.seurat, value = "orig.ident")
+p2 <- DimPlot(my.seurat, reduction = "umap", label = TRUE, repel = TRUE) + NoLegend()
+
+## Do we see any samples segregate? If our integration was good then we shouldn't
+p2
+
+p1
+```
+
+```{r ClusterDiversity}
+## generate table for cluster diversity
+my.df <- as.data.frame.matrix(table(my.seurat$seurat_clusters, my.seurat$orig.ident))
+
+## calculate cluster diversity and add to a new dataframe
+shannon_entropy <- diversity(my.df)
+richness <- specnumber(my.df)
+evenness <- shannon_entropy/(log(richness))
+diversity.df <- data.frame(shannon_entropy, richness, evenness)
+
+## major clusters should have high diversity
+## confirming that integration went well
+kable(diversity.df)
+
+my.df <- t(my.df)
+
+## calculate cluster diversity and add to a new dataframe
+shannon_entropy <- diversity(my.df)
+richness <- specnumber(my.df)
+evenness <- shannon_entropy/(log(richness))
+diversity.df <- data.frame(shannon_entropy, richness, evenness)
+
+## major clusters should have high diversity
+## confirming that integration went well
+kable(diversity.df)
+
+```
