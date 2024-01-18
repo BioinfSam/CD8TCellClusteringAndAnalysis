@@ -2,7 +2,7 @@
 title: "CD8TCellClusteringAndAnalysis"
 author: "Sam Darko"
 output: html_document
-date: "'r Sys.Date()'"
+date: "2024-01-17"
 
 params:
   inputFileString: "/Users/sam/Documents/portfolio/datasets/single_cell/cleanedSamples.rds"
