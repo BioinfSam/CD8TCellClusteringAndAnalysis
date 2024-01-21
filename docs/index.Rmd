@@ -1,15 +1,17 @@
 ---
-title: "CD8TCellClusteringAndAnalysis"
+title: "GenericIntegrationClusteringAndAnalysis"
 author: "Sam Darko"
 output: html_document
 date: "2024-01-17"
 
 params:
-  inputFileString: "/Users/sam/Documents/portfolio/datasets/single_cell/cleanedSamples.rds"
+  workingDirectory: "/Users/sam/Documents/portfolio/datasets/single_cell/"
+  inputFileString: "cleanedSamples.rds"
   subsetString: "CD8-T"
+  
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE, echo = TRUE}
 knitr::opts_chunk$set(echo = TRUE)
 library(Seurat)
 library(ggplot2)
@@ -21,6 +23,7 @@ library(r2r)
 library(vegan)
 library(harmony)
 
+## specific to this project
 setwd("/Users/sam/Documents/GitHub/CD8TCellClusteringAndAnalysis/docs/")
 ```
 
@@ -28,7 +31,9 @@ setwd("/Users/sam/Documents/GitHub/CD8TCellClusteringAndAnalysis/docs/")
 
 Functions that are used down the line in this script
 
-```{r ComputePCsToUse, echo = FALSE, warning = FALSE, message = FALSE}
+A function to compute the priciple components to use in an unbiased manner
+
+```{r ComputePCsToUse, echo = TRUE, warning = FALSE, message = FALSE}
 ComputePCsToUseFunction <- function(this.seurat){
   
   ## Find optimum number of PCs to use downstream.  Code is adapted from:
@@ -53,7 +58,10 @@ ComputePCsToUseFunction <- function(this.seurat){
 }
 ```
 
-```{r QuietUnwantedGenes, echo = FALSE}
+A function to remove genes so they're not used for clustering cells 
+For justification: https://pubmed.ncbi.nlm.nih.gov/36473726/
+
+```{r QuietUnwantedGenes, echo = TRUE}
 
 ## adapted from:
 ## https://rdrr.io/github/ncborcherding/Trex/src/R/quietTCRgenes.R
@@ -89,11 +97,13 @@ quietUnwantedGenesFunction <- function(this.seurat, unwanted_genes){
 ## Building our Seurat object
 
 ```{r ReadInSeuratAndSubset, warning = FALSE}
-## read in public datasets
-my.seurat <- readRDS(params$inputFileString)
+## read in Seurat object from upstream script
+my.seurat <- readRDS(paste(params$workingDirectory, params$inputFileString, sep = ""))
 
+## set the ident to use for subsetting
 my.seurat <- SetIdent(my.seurat, value = my.seurat$predicted.celltype.l1)
 
+## subset for level 1 Azimuth designation
 my.seurat <- subset(my.seurat, idents = params$subsetString)
 
 ## give us a summary of the seurat object
@@ -101,7 +111,7 @@ my.seurat
 
 ```
 
-## Normalize and Find Features
+## Normalizing and Finding Features
 
 ```{r IntegrationPrep}
 
@@ -119,21 +129,35 @@ my.seurat.list <- lapply(X = my.seurat.list, FUN = function(x) {
   x <- SCTransform(x, vst.flavor = "v2", verbose = FALSE, conserve.memory = FALSE, ncells = 5000)
 })
 
+## to remove TCR genes
 my.unwanted_genes <- "^TRBV|^TRBD|^TRBJ|^TRBC|^TRDV|^TRDD|^TRDJ|^TRDC|^TRAV|^TRAJ|^TRAC|^TRGV|^TRGJ|^TRGC"
 
 my.seurat.list <- lapply(X = my.seurat.list, FUN = function(x) {
   x <- quietUnwantedGenesFunction(x, my.unwanted_genes)
 })
 
+## to remove BCR genes
+my.unwanted_genes <- "^IGHC|^IGHD|^IGHJ|^IGHV|^IGKC|^IGKJ|^IGKV|^IGLC|^IGLJ|^IGLV|^IGHA|^IGHD|^IGHE|^IGHG|^IGHM|^IGKC"
+
+my.seurat.list <- lapply(X = my.seurat.list, FUN = function(x) {
+  x <- quietUnwantedGenesFunction(x, my.unwanted_genes)
+})
+
+## get a list of genes to be used for integration
 features <- SelectIntegrationFeatures(object.list = my.seurat.list, nfeatures = 3000)
 
+## merge individual seurat objects
 my.seurat <- merge(my.seurat.list[[1]], y = my.seurat.list[2:length(my.seurat.list)], merge.data = TRUE)
 
+## set variable genes from the features selected earlier
 VariableFeatures(my.seurat) <- features
 
+## now we can prep SCT markers
 my.seurat <- PrepSCTFindMarkers(my.seurat, assay = "SCT", verbose = TRUE)
 
 ```
+
+## Running Harmony for integration
 
 ```{r HarmonyIntegration}
 ## adapted from:
@@ -147,10 +171,6 @@ my.seurat <- RunPCA(object = my.seurat, assay = "SCT", npcs = 50)
 ## compute PCs to use in a non-arbitrary fashion
 pcs <- ComputePCsToUseFunction(my.seurat)
 
-## https://github.com/immunogenomics/harmony/issues/130
-## for rationale in setting epsilon cluster and epsilong harmony parameters
-## run Harmony using PCs determined earlier
-
 ## probably don't need to run 30 iterations, but let's just be careful
 ## at the expense of slightly longer run time
 
@@ -159,13 +179,15 @@ my.seurat <- RunHarmony(object = my.seurat,
                         reduction.use = "pca",
                         dims.use = 1:pcs,
                         group.by.vars = "orig.ident",
-                        epsilon.cluster = -Inf,
-                        epsilon.harmony = -Inf,
-                        max.iter.harmony = 30,
+                        max_iter = 30,
                         plot_convergence = TRUE)
 ```
 
-```{r ClusterVisualization}
+## Visualizing Clustering and Integration 
+
+```{r ClusterVisualization, warning = FALSE, message = FALSE}
+
+## run initial umap
 my.seurat <- RunUMAP(object = my.seurat, assay = "SCT", reduction = "harmony", dims = 1:pcs)
 
 ## Find neighbors using PCs determined earlier
@@ -176,6 +198,7 @@ my.seurat <- FindClusters(object = my.seurat, resolution = 0.8, algorithm = 1)
 
 ## View clusters via UMAP
 p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE) + NoLegend()
+p1
 
 ## see how samples cluster on the UMAP
 my.seurat <- SetIdent(my.seurat, value = "orig.ident")
@@ -184,10 +207,14 @@ p2 <- DimPlot(my.seurat, reduction = "umap", label = TRUE, repel = TRUE) + NoLeg
 ## Do we see any samples segregate? If our integration was good then we shouldn't
 p2
 
-p1
+## considering that "PBMC10K" is 5' and now 3' GEX like the other two dataset, that's not too bad
 ```
+## Diversity measurements
 
-```{r ClusterDiversity}
+We can look at how well the integration went by looking at cluster and sample diversity
+It's just a non-visual way to confirm
+
+```{r Diversity}
 ## generate table for cluster diversity
 my.df <- as.data.frame.matrix(table(my.seurat$seurat_clusters, my.seurat$orig.ident))
 
@@ -201,16 +228,24 @@ diversity.df <- data.frame(shannon_entropy, richness, evenness)
 ## confirming that integration went well
 kable(diversity.df)
 
+## transpose data to look at diversity from the sample POV
 my.df <- t(my.df)
 
-## calculate cluster diversity and add to a new dataframe
+## calculate sample diversity and add to a new dataframe
 shannon_entropy <- diversity(my.df)
 richness <- specnumber(my.df)
 evenness <- shannon_entropy/(log(richness))
 diversity.df <- data.frame(shannon_entropy, richness, evenness)
 
-## major clusters should have high diversity
-## confirming that integration went well
+## samples have similar diversity, which is furthur indication that 
+## integration went pretty well
 kable(diversity.df)
 
+```
+
+```{r WriteData}
+
+## and let's write the subsetted object
+my.filename <- paste(params$workingDirectory, params$subsetString, ".rds", sep = "")
+saveRDS(my.seurat, my.filename)
 ```
