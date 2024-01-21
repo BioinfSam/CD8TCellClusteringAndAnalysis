@@ -24,7 +24,7 @@ library(vegan)
 library(harmony)
 
 ## specific to this project
-setwd("/Users/sam/Documents/GitHub/CD8TCellClusteringAndAnalysis/docs/")
+setwd("/Users/sam/Documents/GitHub/GenericIntegrationAndClustering/docs/")
 ```
 
 ## Functions
