@@ -200,19 +200,26 @@ my.seurat <- FindClusters(object = my.seurat, resolution = 0.8, algorithm = 1)
 p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE) + NoLegend()
 p1
 
+## Let's see how our clusters look with the level 2 Azimuth predictions overlaid
+my.seurat <- SetIdent(my.seurat, value = my.seurat$predicted.celltype.l2)
+p1 <- DimPlot(my.seurat, reduction = "umap", label = FALSE)
+p1
+
 ## see how samples cluster on the UMAP
 my.seurat <- SetIdent(my.seurat, value = "orig.ident")
-p2 <- DimPlot(my.seurat, reduction = "umap", label = TRUE, repel = TRUE) + NoLegend()
+p2 <- DimPlot(my.seurat, reduction = "umap", label = FALSE, repel = TRUE)
 
 ## Do we see any samples segregate? If our integration was good then we shouldn't
 p2
 
 ## considering that "PBMC10K" is 5' and now 3' GEX like the other two dataset, that's not too bad
 ```
+
+
 ## Diversity measurements
 
 We can look at how well the integration went by looking at cluster and sample diversity
-It's just a non-visual way to confirm
+It's just a non-visual way to confirm that no clusters are sample-specific because that would indicate some artifact
 
 ```{r Diversity}
 ## generate table for cluster diversity
