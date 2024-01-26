@@ -2,7 +2,7 @@
 title: "GenericIntegrationClusteringAndAnalysis"
 author: "Sam Darko"
 output: html_document
-date: "2024-01-17"
+date: "`r Sys.Date()`"
 
 params:
   workingDirectory: "/Users/sam/Documents/portfolio/datasets/single_cell/"
@@ -23,8 +23,6 @@ library(r2r)
 library(vegan)
 library(harmony)
 
-## specific to this project
-setwd("/Users/sam/Documents/GitHub/GenericIntegrationAndClustering/docs/")
 ```
 
 ## Functions
@@ -111,9 +109,118 @@ my.seurat
 
 ```
 
+## How do things look prior to integration?
+
+We're going to do this as closely as possible to how we do the actual integration  
+  
+However, we're not going to:  
+1. Remove TCR/BCR germline genes from the variable features  
+2. Use a rational number of PCs  
+3. Actually run Harmony  
+
+```{r NoIntegrationVisualization, warning = FALSE, message = FALSE}
+## to throw away later
+my.bad.seurat <- my.seurat
+
+## set identity to use, in this case it's the original ID
+my.bad.seurat <- SetIdent(my.bad.seurat, value = my.bad.seurat$orig.ident)
+
+## split the dataset into a list by the orignal ID
+my.bad.seurat.list <- SplitObject(my.bad.seurat, split.by = "orig.ident")
+
+## normalize and identify variable features for each dataset independently
+## it's slightly better to determine variable genes for each sample 
+## and then make a final selection later
+
+my.bad.seurat.list <- lapply(X = my.bad.seurat.list, FUN = function(x) {
+  x <- SCTransform(x, vst.flavor = "v2", verbose = FALSE, conserve.memory = FALSE, ncells = 5000)
+})
+
+## get a list of genes to be used for integration
+features <- SelectIntegrationFeatures(object.list = my.bad.seurat.list, nfeatures = 3000)
+
+## merge individual seurat objects
+my.bad.seurat <- merge(my.bad.seurat.list[[1]], y = my.bad.seurat.list[2:length(my.bad.seurat.list)], merge.data = TRUE)
+
+## set variable genes from the features selected earlier
+VariableFeatures(my.bad.seurat) <- features
+
+## now we can prep SCT markers
+my.bad.seurat <- PrepSCTFindMarkers(my.bad.seurat, assay = "SCT", verbose = TRUE)
+
+## run PCA
+my.bad.seurat <- RunPCA(object = my.bad.seurat, assay = "SCT", npcs = 50)
+
+#######
+## run initial umap
+my.bad.seurat <- RunUMAP(object = my.bad.seurat, assay = "SCT", reduction.name = "umap.unintegrated", dims = 1:30)
+
+## Find neighbors using PCs determined earlier
+my.bad.seurat <- FindNeighbors(object = my.bad.seurat, assay = "SCT", dims = 1:30)
+
+## Find clusters using neighbors and PCs determined earlier
+my.bad.seurat <- FindClusters(object = my.bad.seurat, resolution = 1, algorithm = 1)
+
+## View clusters via UMAP
+p1 <- DimPlot(my.bad.seurat, reduction = "umap.unintegrated", label = TRUE, label.size = 8) + NoLegend()
+p1
+
+## Let's see how our clusters look with the level 2 Azimuth predictions overlaid
+my.bad.seurat <- SetIdent(my.bad.seurat, value = my.bad.seurat$predicted.celltype.l2)
+p1 <- DimPlot(my.bad.seurat, reduction = "umap.unintegrated", label = TRUE, label.size = 8, repel = TRUE) + NoLegend()
+p1
+
+## see how samples cluster on the UMAP
+## it's not good that some clusters are sample specific
+my.bad.seurat <- SetIdent(my.bad.seurat, value = "orig.ident")
+p2 <- DimPlot(my.bad.seurat, reduction = "umap.unintegrated", label = FALSE)
+p2
+```
+
+
+## Diversity measurements without integration
+
+We can look at how well the integration went by looking at cluster and sample diversity
+It's just a non-visual way to confirm that no clusters are sample-specific, which would indicate the that those clusters are artifacts and that our integration didn't go well  
+
+In a good integration, all samples would be represented in all clusters and vice versa  
+
+This is not a good integration  
+
+```{r NonIntegratedDiversity}
+## generate table for cluster diversity
+my.df <- as.data.frame.matrix(table(my.bad.seurat$seurat_clusters, my.bad.seurat$orig.ident))
+
+## calculate cluster diversity and add to a new dataframe
+shannon_entropy <- diversity(my.df)
+richness <- specnumber(my.df)
+evenness <- shannon_entropy/(log(richness))
+diversity.df <- data.frame(shannon_entropy, richness, evenness)
+
+## major clusters should have high diversity
+## confirming that integration went well
+kable(diversity.df)
+
+## transpose data to look at diversity from the sample POV
+my.df <- t(my.df)
+
+## calculate sample diversity and add to a new dataframe
+shannon_entropy <- diversity(my.df)
+richness <- specnumber(my.df)
+evenness <- shannon_entropy/(log(richness))
+diversity.df <- data.frame(shannon_entropy, richness, evenness)
+
+## samples have similar diversity, which is furthur indication that 
+## integration went pretty well
+kable(diversity.df)
+
+rm(my.bad.seurat)
+```
+
+
 ## Normalizing and Finding Features
 
-```{r IntegrationPrep}
+```{r IntegrationPrep, message = FALSE, warning = FALSE}
 
 ## set identity to use, in this case it's the original ID
 my.seurat <- SetIdent(my.seurat, value = my.seurat$orig.ident)
@@ -159,7 +266,7 @@ my.seurat <- PrepSCTFindMarkers(my.seurat, assay = "SCT", verbose = TRUE)
 
 ## Running Harmony for integration
 
-```{r HarmonyIntegration}
+```{r HarmonyIntegration, message = FALSE, warning = FALSE}
 ## adapted from:
 ## https://github.com/immunogenomics/harmony/issues/41
 
@@ -194,20 +301,20 @@ my.seurat <- RunUMAP(object = my.seurat, assay = "SCT", reduction = "harmony", d
 my.seurat <- FindNeighbors(object = my.seurat, assay = "SCT", reduction = "harmony", dims = 1:pcs)
 
 ## Find clusters using neighbors and PCs determined earlier
-my.seurat <- FindClusters(object = my.seurat, resolution = 0.8, algorithm = 1)
+my.seurat <- FindClusters(object = my.seurat, resolution = 1, algorithm = 1)
 
 ## View clusters via UMAP
-p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE) + NoLegend()
+p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE, label.size = 8) + NoLegend()
 p1
 
 ## Let's see how our clusters look with the level 2 Azimuth predictions overlaid
 my.seurat <- SetIdent(my.seurat, value = my.seurat$predicted.celltype.l2)
-p1 <- DimPlot(my.seurat, reduction = "umap", label = FALSE)
+p1 <- DimPlot(my.seurat, reduction = "umap", label = TRUE, label.size = 8, repel = TRUE) + NoLegend()
 p1
 
 ## see how samples cluster on the UMAP
 my.seurat <- SetIdent(my.seurat, value = "orig.ident")
-p2 <- DimPlot(my.seurat, reduction = "umap", label = FALSE, repel = TRUE)
+p2 <- DimPlot(my.seurat, reduction = "umap", label = FALSE)
 
 ## Do we see any samples segregate? If our integration was good then we shouldn't
 p2
@@ -219,7 +326,9 @@ p2
 ## Diversity measurements
 
 We can look at how well the integration went by looking at cluster and sample diversity
-It's just a non-visual way to confirm that no clusters are sample-specific because that would indicate some artifact
+It's just a non-visual way to confirm that no clusters are sample-specific, which would indicate the that those clusters are artifacts and that our integration didn't go well
+
+In a good integration, all samples would be represented in all clusters and vice versa
 
 ```{r Diversity}
 ## generate table for cluster diversity
