@@ -11,7 +11,7 @@ params:
   
 ---
 
-```{r setup, include=FALSE, echo = TRUE}
+```{r setup, include=TRUE, message = FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(Seurat)
 library(ggplot2)
@@ -22,6 +22,18 @@ library(knitr)
 library(r2r)
 library(vegan)
 library(harmony)
+
+```
+
+## Parameters
+
+Listing parameters definined at the beginning of the rmarkdown document
+
+```{r Parameters, echo = FALSE}
+
+for (name in names(params)) {
+    print(paste(name, params[[name]], sep = " -> "))
+}
 
 ```
 
@@ -364,4 +376,9 @@ kable(diversity.df)
 ## and let's write the subsetted object
 my.filename <- paste(params$workingDirectory, params$subsetString, ".rds", sep = "")
 saveRDS(my.seurat, my.filename)
+```
+
+## Session Info
+```{r SessionInfo, echo = FALSE}
+sessionInfo()
 ```
