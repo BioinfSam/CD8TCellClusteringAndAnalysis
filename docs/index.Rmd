@@ -229,8 +229,16 @@ kable(diversity.df)
 rm(my.bad.seurat)
 ```
 
+## Proper Integration
+
+We can see from the previous portion that simply combining the Seurat objects gives poor results  
+
+This is despite the fact that we're only combining cells of the same identity from Azimuth  
+
 
 ## Normalizing and Finding Features
+
+This is the first series of operation in proper integration
 
 ```{r IntegrationPrep, message = FALSE, warning = FALSE}
 
@@ -277,6 +285,8 @@ my.seurat <- PrepSCTFindMarkers(my.seurat, assay = "SCT", verbose = TRUE)
 ```
 
 ## Running Harmony for integration
+
+This is where we're going to run Harmony for proper integration
 
 ```{r HarmonyIntegration, message = FALSE, warning = FALSE}
 ## adapted from:
@@ -370,6 +380,8 @@ diversity.df <- data.frame(shannon_entropy, richness, evenness)
 kable(diversity.df)
 
 ```
+
+## Saving cell-type specific data
 
 ```{r WriteData}
 
